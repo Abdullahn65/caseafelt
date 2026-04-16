@@ -1,0 +1,1042 @@
+// =============================================================================
+// CaseaFelt — Database Schema
+// =============================================================================
+// Phase 2: Data Model and System Design
+// Database: PostgreSQL (Neon)
+// ORM: Prisma
+// 
+// Design principles:
+// 1. Lean but scalable — only tables needed for Tier 0 + Tier 1 launch features
+// 2. Explicit status/state modeling via enums
+// 3. Soft deletes where business data must be preserved (orders, customers)
+// 4. Hard deletes for ephemeral data (cart items, sessions)
+// 5. All monetary values stored as integers (cents) to avoid floating point
+// 6. All timestamps in UTC
+// 7. Indexes on foreign keys and commonly queried fields
+// 8. Audit trail on sensitive operations
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL") // For Neon pooled vs direct connections
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum OrderStatus {
+  PENDING        // Created but not yet paid (e.g., Stripe session created)
+  CONFIRMED      // Payment confirmed
+  PROCESSING     // Being prepared for shipment
+  SHIPPED        // Handed to carrier
+  DELIVERED      // Carrier confirms delivery
+  CANCELLED      // Cancelled before shipment
+  RETURN_REQUESTED
+  RETURN_APPROVED
+  RETURN_DENIED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  AWAITING_CUSTOMER
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum ContactType {
+  GENERAL
+  SUPPORT
+  CUSTOM_INQUIRY
+  PRESS
+  WHOLESALE
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+enum ContentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  STATUS_CHANGE
+  LOGIN
+  LOGOUT
+  EXPORT
+  REFUND
+  PERMISSION_CHANGE
+}
+
+// =============================================================================
+// USERS & AUTH
+// =============================================================================
+// 
+// Design decision: Clerk handles authentication (sessions, MFA, social login).
+// We store a parallel User record in our DB for all business data relationships.
+// The `clerkId` is the foreign key to Clerk's system.
+// 
+// Tradeoff: Duplicating basic profile data (name, email) in our DB means we
+// don't need to call Clerk's API for every page load. Clerk webhook keeps
+// these in sync. If Clerk is ever replaced, our DB already has the data.
+// =============================================================================
+
+model User {
+  id        String   @id @default(cuid())
+  clerkId   String   @unique // Clerk's user ID — the bridge to auth
+  email     String   @unique
+  firstName String?
+  lastName  String?
+  phone     String?
+  avatarUrl String?
+  role      UserRole @default(CUSTOMER)
+
+  // Business relationships
+  addresses      Address[]
+  orders         Order[]
+  cart           Cart?
+  reviews        Review[]
+  wishlistItems  WishlistItem[]
+  supportTickets SupportTicket[]
+  customerNotes  CustomerNote[]  // Internal admin notes ABOUT this customer
+  customerTags   CustomerTag[]   // Internal tags for segmentation
+
+  // Metadata
+  emailVerified Boolean  @default(false)
+  marketingOptIn Boolean @default(false) // GDPR/CAN-SPAM: explicit consent
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deletedAt     DateTime? // Soft delete — never hard-delete customers with orders
+
+  @@index([clerkId])
+  @@index([email])
+  @@index([role])
+  @@index([createdAt])
+}
+
+// =============================================================================
+// ADDRESSES
+// =============================================================================
+// 
+// Addresses are owned by users but also snapshot-copied onto orders at checkout.
+// This ensures that if a customer changes their address later, the order still
+// reflects the address it was shipped to.
+// =============================================================================
+
+model Address {
+  id         String  @id @default(cuid())
+  userId     String
+  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label      String? // "Home", "Office", etc.
+  firstName  String
+  lastName   String
+  company    String?
+  line1      String
+  line2      String?
+  city       String
+  state      String
+  postalCode String
+  country    String  @default("US")
+  phone      String?
+  isDefault  Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// =============================================================================
+// PRODUCTS, VARIANTS, AND CATALOG
+// =============================================================================
+// 
+// Product architecture:
+// 
+//   Product (e.g., "Alpine Felt Case")
+//     └── ProductVariant (e.g., "Alpine Felt Case — iPhone 16 Pro — Moss")
+//           ├── linked to DeviceModel (iPhone 16 Pro)
+//           ├── linked to Material (Merino Felt)
+//           └── has its own SKU, price, inventory, images
+// 
+// Design decisions:
+// 
+// 1. Products have a base_price; variants can override it. This supports cases
+//    where all variants cost the same (common) and cases where a special
+//    material costs more (occasional). The storefront reads variant price 
+//    if set, else falls back to product base_price.
+// 
+// 2. DeviceModel is a separate table (not a string field) because:
+//    - We need consistent naming ("iPhone 16 Pro" not "iphone16pro")
+//    - We need to filter products by device across the whole catalog
+//    - We need to manage device lifecycle (discontinue old devices)
+// 
+// 3. Collections are many-to-many with products because a product can appear
+//    in multiple collections (e.g., both "Earth" and "New Arrivals").
+// 
+// 4. Materials are a separate table because they carry brand-story metadata
+//    (description, care instructions) and can be shared across products.
+// =============================================================================
+
+model Product {
+  id               String        @id @default(cuid())
+  name             String
+  slug             String        @unique
+  shortDescription String?       // For cards and previews (max ~160 chars)
+  description      String        // Full product description (rich text / markdown)
+  basePrice        Int           // Price in cents (e.g., 4500 = $45.00)
+  compareAtPrice   Int?          // Original price for showing discounts (cents)
+  status           ProductStatus @default(DRAFT)
+  featured         Boolean       @default(false) // Show on homepage
+  sortOrder        Int           @default(0)     // Manual sort within collections
+
+  // SEO
+  seoTitle       String? // Falls back to product name if null
+  seoDescription String? // Falls back to shortDescription if null
+
+  // Relationships
+  variants    ProductVariant[]
+  collections CollectionProduct[]
+  materials   ProductMaterial[]
+  images      ProductImage[]
+  reviews     Review[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([slug])
+  @@index([status])
+  @@index([featured])
+  @@index([createdAt])
+}
+
+model ProductVariant {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  // Variant identity
+  name  String // Display name, e.g., "Moss" or "Charcoal Wool"
+  sku   String @unique
+  color String? // Color name for filtering, e.g., "Moss", "Sand"
+  colorHex String? // Hex value for UI swatches, e.g., "#5C6B4F"
+
+  // Device compatibility
+  deviceModelId String
+  deviceModel   DeviceModel @relation(fields: [deviceModelId], references: [id])
+
+  // Material (optional override — product-level materials are the default)
+  materialId String?
+  material   Material? @relation(fields: [materialId], references: [id])
+
+  // Pricing — null means inherit from product.basePrice
+  price          Int? // Override price in cents
+  compareAtPrice Int? // Override compare-at price in cents
+
+  // Inventory
+  inventoryCount Int     @default(0)
+  lowStockThreshold Int  @default(5) // Alert when stock falls below this
+  trackInventory Boolean @default(true)
+
+  // Physical
+  weight Float? // Grams — needed for shipping calculation
+
+  // Status
+  isActive Boolean @default(true) // Can be deactivated independently of product
+
+  // Relationships
+  images     VariantImage[]
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+  wishlistItems WishlistItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
+  @@index([deviceModelId])
+  @@index([sku])
+  @@index([isActive])
+}
+
+model DeviceModel {
+  id    String @id @default(cuid())
+  brand String // "Apple", "Samsung", "Google"
+  name  String // "iPhone 16 Pro", "Galaxy S25 Ultra"
+  slug  String @unique // "iphone-16-pro"
+
+  // Grouping for UI (e.g., show "iPhone 16" family together)
+  family String? // "iPhone 16", "Galaxy S25"
+
+  // Lifecycle
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+
+  variants ProductVariant[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([brand, name])
+  @@index([brand])
+  @@index([isActive])
+}
+
+model Material {
+  id               String  @id @default(cuid())
+  name             String  @unique // "Merino Felt", "Pressed Wool", "Cork Blend"
+  slug             String  @unique
+  description      String? // Brand story about this material
+  careInstructions String? // How to care for this material
+
+  // Relationships
+  products ProductMaterial[]
+  variants ProductVariant[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// =============================================================================
+// JUNCTION TABLES
+// =============================================================================
+
+model ProductMaterial {
+  productId  String
+  materialId String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  material   Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@id([productId, materialId])
+}
+
+// =============================================================================
+// COLLECTIONS
+// =============================================================================
+// 
+// Collections are aesthetic groupings (Field, Studio, Soft Form, Earth, Structure).
+// They are NOT categories in the traditional e-commerce sense — they carry brand
+// narrative (description, imagery, color associations).
+// 
+// A product can belong to multiple collections. The CollectionProduct join table
+// allows ordering products within a collection independently.
+// =============================================================================
+
+model Collection {
+  id          String @id @default(cuid())
+  name        String // "Earth", "Studio", etc.
+  slug        String @unique
+  description String? // Editorial description for the collection page
+  headline    String? // Short headline for cards
+
+  // Visual identity
+  imageUrl    String? // Hero image for collection page
+  accentColor String? // Hex color associated with this collection
+
+  // SEO
+  seoTitle       String?
+  seoDescription String?
+
+  // Status & ordering
+  status    ContentStatus @default(DRAFT)
+  sortOrder Int           @default(0)
+
+  // Products
+  products CollectionProduct[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([slug])
+  @@index([status])
+}
+
+model CollectionProduct {
+  collectionId String
+  productId    String
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sortOrder    Int        @default(0) // Order within this collection
+
+  @@id([collectionId, productId])
+  @@index([collectionId])
+  @@index([productId])
+}
+
+// =============================================================================
+// MEDIA / IMAGES
+// =============================================================================
+// 
+// Design decision: Separate image tables for products and variants.
+// 
+// Why not a single polymorphic "Image" table?
+// - Prisma doesn't support polymorphic relations cleanly
+// - Type-safe relations are more valuable than table DRYness
+// - Query patterns differ (product images for gallery, variant images for swatches)
+// 
+// All images are stored in Cloudinary. We store the Cloudinary public ID and
+// the full URL. The public ID allows us to generate transformed URLs on the fly
+// (different sizes, formats) without storing every variant.
+// =============================================================================
+
+model ProductImage {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  url         String // Full Cloudinary URL
+  publicId    String? // Cloudinary public ID for transformations
+  altText     String  @default("") // SEO and accessibility — never empty
+  sortOrder   Int     @default(0)
+  isPrimary   Boolean @default(false) // The main product image
+
+  createdAt DateTime @default(now())
+
+  @@index([productId])
+}
+
+model VariantImage {
+  id        String         @id @default(cuid())
+  variantId String
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  url       String
+  publicId  String?
+  altText   String @default("")
+  sortOrder Int    @default(0)
+  isPrimary Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([variantId])
+}
+
+// =============================================================================
+// CART
+// =============================================================================
+// 
+// Cart strategy:
+// 
+// - Authenticated users: Cart stored in DB, linked to User
+// - Guest users: Cart stored in DB, linked by a cookie-based sessionId
+// - On login, guest cart merges into user cart (handled in application logic)
+// 
+// Design decision: DB-backed carts (not cookie-only) because:
+// 1. Enables abandoned cart tracking (business-critical for conversion)
+// 2. Persists across devices for logged-in users
+// 3. Allows admin to view cart state in customer ops panel
+// 4. Cart items reference real variant IDs with FK constraints
+// 
+// Tradeoff: Slightly more DB load than cookie carts, but the operational
+// value far outweighs the cost at this scale.
+// =============================================================================
+
+model Cart {
+  id        String @id @default(cuid())
+  userId    String? @unique // Null for guest carts
+  user      User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId String? @unique // Cookie-based ID for guest carts
+
+  items CartItem[]
+
+  // Abandoned cart tracking
+  lastActivityAt DateTime @default(now()) // Updated on every cart action
+  isAbandoned    Boolean  @default(false) // Flagged by background job
+  abandonedEmailSentAt DateTime? // Track email recovery attempts
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([sessionId])
+  @@index([isAbandoned])
+  @@index([lastActivityAt])
+}
+
+model CartItem {
+  id        String @id @default(cuid())
+  cartId    String
+  cart      Cart   @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  variantId String
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
+  quantity  Int    @default(1)
+
+  addedAt DateTime @default(now())
+
+  @@unique([cartId, variantId]) // One line item per variant per cart
+  @@index([cartId])
+}
+
+// =============================================================================
+// ORDERS
+// =============================================================================
+// 
+// Order architecture:
+// 
+//   Order (the transaction)
+//     ├── OrderItem[] (line items, snapshot of product/variant at time of purchase)
+//     ├── Payment (Stripe payment record)
+//     ├── shippingAddress / billingAddress (JSON snapshots)
+//     └── discountCode (optional)
+// 
+// Critical design decisions:
+// 
+// 1. OrderItems snapshot product data (name, price, SKU) at time of purchase.
+//    This is essential because products change over time (price, name, images).
+//    An order must always reflect what the customer actually bought.
+// 
+// 2. Addresses are stored as JSON on the order (not FK to Address table).
+//    Reason: customer may change/delete their address later, but the order
+//    must always show where it was shipped. JSON snapshot is the standard
+//    pattern for this in e-commerce.
+// 
+// 3. All money is in cents (Int). No Decimal, no Float. $45.00 = 4500.
+// =============================================================================
+
+model Order {
+  id          String      @id @default(cuid())
+  orderNumber String      @unique // Human-readable, e.g., "CF-20260414-0001"
+  userId      String?     // Null for guest orders
+  user        User?       @relation(fields: [userId], references: [id])
+  email       String      // Always stored — even for guest orders
+
+  // Status
+  status OrderStatus @default(PENDING)
+
+  // Money (all in cents)
+  subtotal    Int // Sum of line items before discount/shipping
+  discount    Int @default(0) // Discount amount applied
+  shipping    Int @default(0) // Shipping cost
+  tax         Int @default(0) // Tax amount
+  total       Int // Final charged amount = subtotal - discount + shipping + tax
+
+  // Addresses (JSON snapshots — see design note above)
+  shippingAddress Json
+  billingAddress  Json?  // Null if same as shipping
+
+  // Shipping
+  shippingMethod String? // e.g., "Standard", "Express"
+  trackingNumber String?
+  trackingUrl    String?
+  shippedAt      DateTime?
+  deliveredAt    DateTime?
+
+  // Discount
+  discountCodeId String?
+  discountCode   DiscountCode? @relation(fields: [discountCodeId], references: [id])
+
+  // Stripe
+  stripeSessionId        String? @unique // Stripe Checkout Session ID
+  stripePaymentIntentId  String? @unique // Stripe Payment Intent ID
+
+  // Customer notes
+  customerNote String? // Note from customer at checkout
+
+  // Relationships
+  items    OrderItem[]
+  payment  Payment?
+  refunds  Refund[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([email])
+  @@index([status])
+  @@index([orderNumber])
+  @@index([createdAt])
+  @@index([stripeSessionId])
+}
+
+model OrderItem {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  // Variant reference (kept for analytics, but data is snapshotted below)
+  variantId String?
+  variant   ProductVariant? @relation(fields: [variantId], references: [id])
+  
+  // Snapshot at time of purchase — NEVER rely on live product data for orders
+  productName String
+  variantName String
+  sku         String
+  deviceModel String // "iPhone 16 Pro"
+  unitPrice   Int    // Price in cents at time of purchase
+  quantity    Int
+  totalPrice  Int    // unitPrice * quantity
+
+  // Image snapshot (thumbnail for order confirmation / history)
+  imageUrl String?
+
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
+}
+
+// =============================================================================
+// PAYMENTS & REFUNDS
+// =============================================================================
+// 
+// Payment is 1:1 with Order. We store Stripe's payment data for our records
+// and reconciliation. Stripe is the source of truth for payment state — our
+// records are updated via webhooks.
+// 
+// Refunds are separate records because an order can have multiple partial
+// refunds over time.
+// =============================================================================
+
+model Payment {
+  id      String @id @default(cuid())
+  orderId String @unique
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  // Stripe data
+  stripePaymentIntentId String  @unique
+  stripeChargeId        String?
+  
+  // Amount
+  amount   Int           // Amount charged in cents
+  currency String        @default("usd")
+  status   PaymentStatus @default(PENDING)
+
+  // Card info (non-sensitive — last 4 digits, brand)
+  cardBrand String? // "visa", "mastercard", etc.
+  cardLast4 String? // "4242"
+
+  paidAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([stripePaymentIntentId])
+}
+
+model Refund {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  // Stripe data
+  stripeRefundId String @unique
+
+  amount Int    // Refund amount in cents (can be partial)
+  reason String? // "Customer request", "Defective product", etc.
+  notes  String? // Internal admin notes about this refund
+
+  processedAt DateTime?
+  processedBy String?   // Admin user ID who processed the refund
+
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
+}
+
+// =============================================================================
+// DISCOUNT CODES
+// =============================================================================
+// 
+// Launch scope: Simple discount codes. No complex rule engine.
+// Supports: percentage off, fixed amount off, minimum order, usage limits, expiry.
+// 
+// What's NOT modeled (intentionally deferred):
+// - Per-collection discounts (requires a junction table — add when needed)
+// - Stackable discounts (one code per order at launch)
+// - Automatic discounts (code-only at launch)
+// - Free shipping discounts (just set type=FIXED_AMOUNT and apply to shipping)
+// =============================================================================
+
+model DiscountCode {
+  id   String @id @default(cuid())
+  code String @unique // The code customers enter, e.g., "WELCOME10"
+
+  type  DiscountType // PERCENTAGE or FIXED_AMOUNT
+  value Int          // If PERCENTAGE: 10 = 10%. If FIXED_AMOUNT: 1000 = $10.00
+
+  // Constraints
+  minOrderAmount Int?      // Minimum order subtotal in cents to apply
+  maxUses        Int?      // Total uses allowed (null = unlimited)
+  maxUsesPerUser Int?      // Uses per customer (null = unlimited)
+  currentUses    Int       @default(0)
+  expiresAt      DateTime? // Null = no expiry
+
+  isActive Boolean @default(true)
+
+  // Relationships
+  orders Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([code])
+  @@index([isActive])
+}
+
+// =============================================================================
+// REVIEWS
+// =============================================================================
+// 
+// Reviews are moderated. Submitted reviews are "pending" until an admin
+// approves them. This prevents spam and inappropriate content.
+// 
+// Reviews are tied to both the product (for display) and optionally the user
+// and order (for "verified purchase" badges).
+// =============================================================================
+
+model Review {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?   @relation(fields: [userId], references: [id])
+
+  // Review content
+  rating    Int    // 1–5
+  title     String?
+  body      String
+  
+  // Verification
+  isVerifiedPurchase Boolean @default(false) // Set by system when linked to an order
+  orderId            String? // Optional link to the order
+
+  // Moderation
+  isApproved Boolean @default(false)
+  approvedAt DateTime?
+  approvedBy String? // Admin user ID
+
+  // Display
+  authorName String // Display name (can differ from user name for privacy)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
+  @@index([userId])
+  @@index([isApproved])
+  @@index([rating])
+}
+
+// =============================================================================
+// WISHLIST
+// =============================================================================
+
+model WishlistItem {
+  id        String @id @default(cuid())
+  userId    String
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  variantId String
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, variantId]) // Can't wishlist the same variant twice
+  @@index([userId])
+}
+
+// =============================================================================
+// SUPPORT TICKETS
+// =============================================================================
+// 
+// Simple ticket system. Customer creates a ticket, admin responds.
+// Messages are stored as a thread (TicketMessage[]).
+// 
+// This is NOT a helpdesk platform. No SLA tracking, no auto-routing,
+// no canned responses at launch. Those are Tier 2 / external tool features.
+// =============================================================================
+
+model SupportTicket {
+  id       String @id @default(cuid())
+  userId   String?
+  user     User?  @relation(fields: [userId], references: [id])
+  email    String // Always required — even for logged-in users (for reply-to)
+
+  subject  String
+  status   TicketStatus   @default(OPEN)
+  priority TicketPriority @default(MEDIUM)
+
+  // Optional links
+  orderId String? // If ticket is about a specific order
+
+  // Thread
+  messages TicketMessage[]
+
+  // Admin assignment
+  assignedTo String? // Admin user ID
+
+  closedAt   DateTime?
+  resolvedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([priority])
+  @@index([assignedTo])
+  @@index([createdAt])
+}
+
+model TicketMessage {
+  id       String        @id @default(cuid())
+  ticketId String
+  ticket   SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  body     String
+  isAdmin  Boolean @default(false) // True if sent by admin, false if by customer
+  authorId String? // User ID of the author (admin or customer)
+
+  createdAt DateTime @default(now())
+
+  @@index([ticketId])
+}
+
+// =============================================================================
+// CONTACT / INQUIRY SUBMISSIONS
+// =============================================================================
+// 
+// Contact form submissions from non-authenticated visitors. These do NOT
+// create support tickets automatically — an admin reviews them and may
+// optionally convert to a ticket.
+// 
+// Also used for custom design inquiries (ContactType.CUSTOM_INQUIRY).
+// =============================================================================
+
+model ContactSubmission {
+  id    String      @id @default(cuid())
+  type  ContactType @default(GENERAL)
+  name  String
+  email String
+  phone String?
+
+  subject String
+  message String
+
+  // Admin handling
+  isRead    Boolean   @default(false)
+  readAt    DateTime?
+  readBy    String?   // Admin user ID
+  notes     String?   // Internal admin notes
+  convertedToTicketId String? // If converted to a support ticket
+
+  createdAt DateTime @default(now())
+
+  @@index([type])
+  @@index([isRead])
+  @@index([createdAt])
+}
+
+// =============================================================================
+// NEWSLETTER / LEADS
+// =============================================================================
+// 
+// Simple email capture. No segmentation or campaign management at launch.
+// Marketing campaigns will use Resend or a future integration (Mailchimp, etc.).
+// 
+// Design note: This is separate from User.marketingOptIn because:
+// 1. Newsletter signups can happen without account creation
+// 2. Someone can subscribe via the footer without ever buying
+// 3. Unsubscribe must work independently of account deletion
+// =============================================================================
+
+model NewsletterSubscriber {
+  id    String @id @default(cuid())
+  email String @unique
+
+  // Source tracking
+  source String? // "footer", "checkout", "popup", "blog"
+
+  isActive       Boolean   @default(true) // False when unsubscribed
+  subscribedAt   DateTime  @default(now())
+  unsubscribedAt DateTime?
+
+  @@index([email])
+  @@index([isActive])
+}
+
+// =============================================================================
+// CUSTOMER OPERATIONS (Internal Admin Data)
+// =============================================================================
+// 
+// This is the lean internal customer operations panel described in Phase 1.
+// NOT a CRM platform. Just internal notes and tags attached to customers.
+// 
+// CustomerNote: Free-form internal notes (e.g., "Requested custom color",
+//   "VIP — sends referrals", "Had shipping issue, gave 10% off")
+// 
+// CustomerTag: Simple string tags for lightweight segmentation
+//   (e.g., "vip", "influencer", "wholesale-lead", "has-return")
+// =============================================================================
+
+model CustomerNote {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  body      String
+  createdBy String // Admin user ID who wrote the note
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model CustomerTag {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tag    String // Lowercase, hyphenated: "vip", "wholesale-lead"
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, tag]) // Can't tag the same user with the same tag twice
+  @@index([tag])
+}
+
+// =============================================================================
+// AUDIT LOG
+// =============================================================================
+// 
+// Immutable log of sensitive admin actions. Append-only — never update or delete.
+// 
+// This is a flat table by design. No foreign keys to entities (because the
+// entity may be deleted). We store the entity type and ID as strings.
+// 
+// Indexed for time-range queries (admin reviewing "what happened yesterday").
+// =============================================================================
+
+model AuditLog {
+  id String @id @default(cuid())
+
+  action     AuditAction
+  entityType String      // "order", "product", "user", "refund", etc.
+  entityId   String      // ID of the affected entity
+  userId     String      // Who performed the action (admin user ID)
+  
+  // What changed
+  metadata Json? // Flexible JSON for action-specific data (old/new values, etc.)
+  
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// =============================================================================
+// CONTENT (CMS)
+// =============================================================================
+// 
+// Payload CMS will manage most content, but we include a lightweight content
+// table for small, structured content blocks that the storefront reads
+// (e.g., homepage hero text, announcement bar, FAQ entries).
+// 
+// This avoids coupling every piece of text to the Payload schema while giving
+// admins a way to update copy without a code deploy.
+// 
+// Blog/article content will live in Payload's own tables (managed by Payload).
+// We do NOT duplicate Payload's content model here.
+// =============================================================================
+
+model ContentBlock {
+  id   String @id @default(cuid())
+  key  String @unique // Unique identifier, e.g., "homepage-hero", "announcement-bar"
+  
+  title   String?
+  body    String? // Rich text or markdown
+  imageUrl String?
+  linkUrl  String?
+  linkText String?
+
+  status ContentStatus @default(DRAFT)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([key])
+  @@index([status])
+}
+
+// =============================================================================
+// EMAIL EVENTS (Tracking)
+// =============================================================================
+// 
+// Tracks transactional emails sent via Resend. This is NOT a marketing email
+// tracker — it's for operational visibility (did the order confirmation send?
+// did the shipping notification send?).
+// 
+// Resend webhooks update the status (delivered, bounced, etc.).
+// =============================================================================
+
+model EmailEvent {
+  id String @id @default(cuid())
+
+  to       String // Recipient email
+  subject  String
+  template String // Template identifier, e.g., "order-confirmation", "shipping-notification"
+
+  // Resend data
+  resendId String? @unique // Resend's message ID
+
+  // Status
+  status    String @default("sent") // "sent", "delivered", "bounced", "complained"
+  errorMessage String?
+
+  // Context
+  entityType String? // "order", "ticket", etc.
+  entityId   String? // ID of the related entity
+
+  sentAt      DateTime @default(now())
+  deliveredAt DateTime?
+  bouncedAt   DateTime?
+
+  @@index([to])
+  @@index([template])
+  @@index([sentAt])
+  @@index([entityType, entityId])
+}

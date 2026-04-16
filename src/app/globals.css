@@ -1,0 +1,248 @@
+@import url("/fonts/inter.css");
+@import "tailwindcss";
+
+/*
+ * ============================================================================
+ * CaseaFelt — Design Tokens (Phase 3 Color System)
+ * ============================================================================
+ * All semantic tokens defined as CSS custom properties.
+ * Tailwind v4 reads these via @theme — no tailwind.config.ts needed.
+ * ============================================================================
+ */
+
+@theme {
+  /* ── Colors: Backgrounds ──────────────────────────────────── */
+  --color-bg-primary: #FAF8F5;
+  --color-bg-secondary: #F2EDE7;
+  --color-bg-tertiary: #E8E3DC;
+  --color-bg-inverse: #2C2C2C;
+
+  /* ── Colors: Foreground / Text ────────────────────────────── */
+  --color-fg-primary: #2C2C2C;
+  --color-fg-secondary: #7A756E;
+  --color-fg-tertiary: #A39E96;
+  --color-fg-inverse: #FAF8F5;
+
+  /* ── Colors: Accents ──────────────────────────────────────── */
+  --color-accent-olive: #5C6B4F;
+  --color-accent-sand: #C4B49A;
+  --color-accent-burgundy: #6B3A3A;
+  --color-accent-slate: #4A4E54;
+
+  /* ── Colors: Borders ──────────────────────────────────────── */
+  --color-border-default: #E8E3DC;
+  --color-border-strong: #D1CBC2;
+
+  /* ── Colors: Functional ───────────────────────────────────── */
+  --color-success: #5C6B4F;
+  --color-warning: #B8860B;
+  --color-error: #6B3A3A;
+  --color-info: #4A4E54;
+
+  /* ── Font Family ──────────────────────────────────────────── */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+  /* ── Font Sizes (Major Third 1.250 scale from 16px) ──────── */
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.5;
+  --text-xs--letter-spacing: 0.02em;
+
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.5;
+  --text-sm--letter-spacing: 0.01em;
+
+  --text-base: 1rem;
+  --text-base--line-height: 1.6;
+
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.55;
+
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.4;
+  --text-xl--letter-spacing: -0.01em;
+
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 1.3;
+  --text-2xl--letter-spacing: -0.015em;
+
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 1.25;
+  --text-3xl--letter-spacing: -0.02em;
+
+  --text-4xl: 2.25rem;
+  --text-4xl--line-height: 1.2;
+  --text-4xl--letter-spacing: -0.025em;
+
+  --text-5xl: 3rem;
+  --text-5xl--line-height: 1.1;
+  --text-5xl--letter-spacing: -0.03em;
+
+  /* ── Radius ───────────────────────────────────────────────── */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-full: 9999px;
+}
+
+/*
+ * ============================================================================
+ * Base Styles
+ * ============================================================================
+ */
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    border-color: var(--color-border-default);
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--color-bg-primary);
+    color: var(--color-fg-primary);
+    font-size: var(--text-base);
+    line-height: var(--text-base--line-height);
+  }
+
+  /* Heading defaults */
+  h1, h2, h3, h4, h5, h6 {
+    color: var(--color-fg-primary);
+    font-weight: 600;
+  }
+
+  h1 { font-size: var(--text-3xl); line-height: var(--text-3xl--line-height); letter-spacing: var(--text-3xl--letter-spacing); }
+  h2 { font-size: var(--text-2xl); line-height: var(--text-2xl--line-height); letter-spacing: var(--text-2xl--letter-spacing); }
+  h3 { font-size: var(--text-xl); line-height: var(--text-xl--line-height); letter-spacing: var(--text-xl--letter-spacing); font-weight: 500; }
+
+  /* Links */
+  a {
+    color: var(--color-accent-olive);
+    text-decoration: none;
+  }
+
+  a:hover {
+    text-decoration: underline;
+  }
+
+  /* Focus ring — WCAG 2.1 AA visible focus */
+  :focus-visible {
+    outline: 2px solid var(--color-border-strong);
+    outline-offset: 2px;
+  }
+
+  /* Skip link — first focusable element, hidden until focused */
+  .skip-link {
+    position: absolute;
+    top: -100%;
+    left: 16px;
+    z-index: 9999;
+    padding: 8px 16px;
+    background: var(--color-bg-inverse);
+    color: var(--color-fg-inverse);
+    font-size: var(--text-sm);
+    border-radius: var(--radius-md);
+    transition: top 0.15s;
+  }
+
+  .skip-link:focus {
+    top: 8px;
+  }
+
+  /* Reduced motion preference */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/*
+ * ============================================================================
+ * Utility Classes
+ * ============================================================================
+ */
+
+@layer utilities {
+  /* Label style: Phase 3 spec — 11px, medium, uppercase, wide tracking */
+  .text-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-fg-secondary);
+  }
+
+  /* Container: Phase 3 layout system */
+  .container-page {
+    max-width: 1280px;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  @media (min-width: 640px) {
+    .container-page {
+      padding-left: 1.5rem;
+      padding-right: 1.5rem;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .container-page {
+      padding-left: 2rem;
+      padding-right: 2rem;
+    }
+  }
+
+  /* Section padding: Phase 3 section rhythm */
+  .section-padding {
+    padding-top: 2.5rem;
+    padding-bottom: 2.5rem;
+  }
+
+  @media (min-width: 640px) {
+    .section-padding {
+      padding-top: 3rem;
+      padding-bottom: 3rem;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .section-padding {
+      padding-top: 5rem;
+      padding-bottom: 5rem;
+    }
+  }
+
+  /* Prose — narrow content */
+  .prose-narrow {
+    max-width: 42rem; /* max-w-2xl */
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  /* Skeleton pulse animation */
+  .skeleton-pulse {
+    animation: skeleton-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    background-color: var(--color-bg-secondary);
+    border-radius: var(--radius-md);
+  }
+
+  @keyframes skeleton-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+}
