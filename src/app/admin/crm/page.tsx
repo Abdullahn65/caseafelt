@@ -51,7 +51,7 @@ export default async function CRMPage({
       db.user.count({ where: { deletedAt: null } }),
       db.user.count({ where: { deletedAt: null, role: { in: ["ADMIN", "SUPER_ADMIN"] } } }),
       db.order.count(),
-      db.order.aggregate({ _sum: { totalAmount: true } }),
+      db.order.aggregate({ _sum: { total: true } }),
     ]),
   ]);
 
@@ -62,7 +62,7 @@ export default async function CRMPage({
     { label: "Total Customers", value: totalCustomers, icon: Users },
     { label: "Team Members", value: totalAdmins, icon: UserCheck },
     { label: "Total Orders", value: totalOrders, icon: ShoppingBag },
-    { label: "Total Revenue", value: formatPrice(revenue._sum.totalAmount ?? 0), icon: TrendingUp },
+    { label: "Total Revenue", value: formatPrice(revenue._sum.total ?? 0), icon: TrendingUp },
   ];
 
   return (
