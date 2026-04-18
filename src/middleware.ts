@@ -1,25 +1,49 @@
+import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
 
 /**
- * MVP Middleware — no auth gating.
- * 
- * Clerk auth is deferred to a later phase. For now:
- * - /account/* and /admin/* redirect to homepage (no login available)
- * - All other routes pass through
- * 
- * When Clerk is enabled, replace this with clerkMiddleware.
+ * Clerk-powered middleware.
+ *
+ * Public routes: storefront, API webhooks, health check, sign-in/up.
+ * Protected routes: /account/* requires login, /admin/* requires ADMIN role.
  */
-export default function middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl;
 
-  // Block account/admin routes until auth is enabled
-  if (pathname.startsWith("/account") || pathname.startsWith("/admin")) {
-    return NextResponse.redirect(new URL("/", req.url));
+const isPublicRoute = createRouteMatcher([
+  "/",
+  "/products(.*)",
+  "/collections(.*)",
+  "/cart(.*)",
+  "/about",
+  "/contact",
+  "/sign-in(.*)",
+  "/sign-up(.*)",
+  "/api/webhooks(.*)",
+  "/api/health",
+  "/api/cart(.*)",
+  "/api/checkout(.*)",
+]);
+
+const isAdminRoute = createRouteMatcher(["/admin(.*)"]);
+
+export default clerkMiddleware(async (auth, req) => {
+  // Public routes — no auth required
+  if (isPublicRoute(req)) {
+    return NextResponse.next();
+  }
+
+  // All other routes require authentication
+  const { userId, sessionClaims } = await auth.protect();
+
+  // Admin routes require ADMIN or SUPER_ADMIN role
+  if (isAdminRoute(req)) {
+    const role = (sessionClaims?.metadata as any)?.role;
+    if (role !== "ADMIN" && role !== "SUPER_ADMIN") {
+      return NextResponse.redirect(new URL("/", req.url));
+    }
   }
 
   return NextResponse.next();
-}
+});
 
 export const config = {
   matcher: [

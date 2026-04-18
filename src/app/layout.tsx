@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -24,14 +25,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body>
-        {/* Skip to main content — WCAG 2.1 AA */}
-        <a href="#main-content" className="skip-link">
-          Skip to main content
-        </a>
-        {children}
-      </body>
-    </html>
+    <ClerkProvider>
+      <html lang="en">
+        <body>
+          {/* Skip to main content — WCAG 2.1 AA */}
+          <a href="#main-content" className="skip-link">
+            Skip to main content
+          </a>
+          {children}
+        </body>
+      </html>
+    </ClerkProvider>
   );
 }

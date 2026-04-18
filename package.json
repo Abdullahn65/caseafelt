@@ -16,14 +16,14 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
-    "@clerk/nextjs": "^6.9.0",
+    "@clerk/nextjs": "^6.39.2",
     "@prisma/client": "^6.4.0",
+    "@radix-ui/react-accordion": "^1.2.4",
     "@radix-ui/react-dialog": "^1.1.6",
     "@radix-ui/react-dropdown-menu": "^2.1.6",
     "@radix-ui/react-select": "^2.1.6",
     "@radix-ui/react-separator": "^1.1.2",
     "@radix-ui/react-toast": "^1.2.6",
-    "@radix-ui/react-accordion": "^1.2.4",
     "@stripe/stripe-js": "^5.5.0",
     "cloudinary": "^2.5.1",
     "clsx": "^2.1.1",
