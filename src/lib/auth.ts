@@ -20,13 +20,13 @@ export interface AuthUser {
 
 /**
  * Get the current authenticated user from our database.
- * Returns null if not signed in or no local user record.
+ * Auto-creates a local user record if Clerk user exists but DB record doesn't.
  */
 export async function getCurrentUser(): Promise<AuthUser | null> {
   const clerk = await currentUser();
   if (!clerk) return null;
 
-  const user = await db.user.findUnique({
+  let user = await db.user.findUnique({
     where: { clerkId: clerk.id },
     select: {
       id: true,
@@ -37,6 +37,31 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
       lastName: true,
     },
   });
+
+  // Auto-provision: Clerk user exists but no local DB record yet
+  if (!user) {
+    const email =
+      clerk.emailAddresses.find((e) => e.id === clerk.primaryEmailAddressId)
+        ?.emailAddress ?? clerk.emailAddresses[0]?.emailAddress ?? "";
+
+    user = await db.user.create({
+      data: {
+        clerkId: clerk.id,
+        email,
+        firstName: clerk.firstName,
+        lastName: clerk.lastName,
+        avatarUrl: clerk.imageUrl,
+      },
+      select: {
+        id: true,
+        clerkId: true,
+        email: true,
+        role: true,
+        firstName: true,
+        lastName: true,
+      },
+    });
+  }
 
   return user;
 }

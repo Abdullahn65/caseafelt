@@ -32,15 +32,10 @@ export default clerkMiddleware(async (auth, req) => {
   }
 
   // All other routes require authentication
-  const { userId, sessionClaims } = await auth.protect();
+  await auth.protect();
 
-  // Admin routes require ADMIN or SUPER_ADMIN role
-  if (isAdminRoute(req)) {
-    const role = (sessionClaims?.metadata as any)?.role;
-    if (role !== "ADMIN" && role !== "SUPER_ADMIN") {
-      return NextResponse.redirect(new URL("/", req.url));
-    }
-  }
+  // Admin route access is checked in the admin layout via requireAdmin()
+  // This avoids needing to sync roles into Clerk session claims
 
   return NextResponse.next();
 });

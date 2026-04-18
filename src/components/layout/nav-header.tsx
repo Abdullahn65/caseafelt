@@ -3,6 +3,8 @@ import { ShoppingBag, ChevronDown } from "lucide-react";
 import { getCartItemCount } from "@/lib/data/cart";
 import { getContentBlock } from "@/lib/data/products";
 import { MobileMenu } from "@/components/layout/mobile-menu";
+import { UserMenu } from "@/components/layout/user-menu";
+import { getCurrentUser } from "@/lib/auth";
 
 /**
  * NavHeader — Phase 3 spec.
@@ -32,7 +34,11 @@ async function AnnouncementBar() {
 }
 
 async function NavHeader() {
-  const cartCount = await getCartItemCount();
+  const [cartCount, user] = await Promise.all([
+    getCartItemCount(),
+    getCurrentUser(),
+  ]);
+  const isAdmin = user?.role === "ADMIN" || user?.role === "SUPER_ADMIN";
 
   return (
     <>
@@ -70,8 +76,11 @@ async function NavHeader() {
               </Link>
             </nav>
 
-            {/* Right side: Cart */}
-            <div className="flex items-center gap-4">
+            {/* Right side: User + Cart */}
+            <div className="flex items-center gap-3">
+              {/* User menu (sign in / admin link / avatar) */}
+              <UserMenu isAdmin={isAdmin} />
+
               {/* Cart */}
               <Link
                 href="/cart"
