@@ -4,6 +4,7 @@ import { formatPrice } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Plus } from "lucide-react";
+import { DuplicateButton } from "@/components/admin/duplicate-button";
 
 export default async function AdminProductsPage({
   searchParams,
@@ -37,6 +38,7 @@ export default async function AdminProductsPage({
               <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium">Variants</th>
               <th className="px-4 py-3 font-medium text-right">Base Price</th>
+              <th className="px-4 py-3 font-medium text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border-default">
@@ -71,6 +73,9 @@ export default async function AdminProductsPage({
                 </td>
                 <td className="px-4 py-3 text-right font-medium">
                   {formatPrice(product.basePrice)}
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <DuplicateButton productId={product.id} />
                 </td>
               </tr>
             ))}
